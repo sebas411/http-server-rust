@@ -13,8 +13,9 @@ fn main() -> Result<()> {
                 let mut buffer = [0; 1024];
                 stream.read(&mut buffer)?;
                 let buffer_string = String::from_utf8(buffer.to_vec())?;
-                let split_buffer = buffer_string.split("\r\n").collect::<Vec<_>>();
-                let req = split_buffer[0];
+                let mut split_buffer = buffer_string.split("\r\n");
+                let req = split_buffer.next().unwrap();
+                let headers = split_buffer.take_while(|s| !(*s).is_empty()).collect::<Vec<_>>();
                 let path = req.split(' ').nth(1).unwrap_or("");
                 let mut content = String::new();
                 let mut content_headers = String::new();
@@ -22,6 +23,15 @@ fn main() -> Result<()> {
                 match path {
                     "/" => {
                         status_code = 200;
+                    },
+                    "/user-agent" => {
+                        status_code = 200;
+                        for header in headers {
+                            let (k, v) = header.split_once(':').unwrap_or(("", ""));
+                            if k.trim().to_lowercase() == "user-agent" {
+                                content = v.trim().to_string();
+                            }
+                        }
                     },
                     s if s.len() > 6 && &s[..6] == "/echo/" => {
                         status_code = 200;
