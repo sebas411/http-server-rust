@@ -1,7 +1,9 @@
+use std::{env, fs::File, io::Read};
+
 use anyhow::Result;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, task::JoinSet};
 
-async fn handle_client(mut stream: TcpStream) -> Result<()> {
+async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()> {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).await?;
     let buffer_string = String::from_utf8(buffer.to_vec())?;
@@ -11,6 +13,7 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
     let path = req.split(' ').nth(1).unwrap_or("");
     let mut content = String::new();
     let mut content_headers = String::new();
+    let mut content_type = "text/plain".to_string();
     let status_code;
     match path {
         "/" => {
@@ -30,6 +33,19 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
             let echo_text = &s[6..];
             content = echo_text.to_string();
         },
+        s if s.len() > 6 && &s[..7] == "/files/" => {
+            let filename = &s[7..];
+            match File::open(format!("{}/{}", &file_directory, &filename)) {
+                Ok(mut file) => {
+                    status_code = 200;
+                    file.read_to_string(&mut content)?;
+                    content_type = "application/octet-stream".to_string();
+                },
+                Err(_) => {
+                    status_code = 404;
+                }
+            }
+        },
         _ => {
             status_code = 404;
         },
@@ -41,7 +57,7 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
         status_text = "OK".to_string();
     }
     if !content.is_empty() {
-        content_headers = format!("Content-Type: text/plain\r\nContent-Length: {}\r\n", content.len());
+        content_headers = format!("Content-Type: {}\r\nContent-Length: {}\r\n", content_type, content.len());
     }
     let mut response = String::new();
     response.push_str(&format!("HTTP/1.1 {} {}\r\n{}\r\n{}", status_code, status_text, content_headers, content));
@@ -52,16 +68,27 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = env::args().collect::<Vec<_>>();
+    let file_directory;
+    match args.iter().skip_while(|a| a != &"--directory").skip(1).next() {
+        Some(dirname) => {
+            file_directory = dirname.clone();
+        },
+        None => {
+            file_directory = "".to_string();
+        },
+    }
     let listener = TcpListener::bind("127.0.0.1:4221").await?;
     println!("Http server started. Accepting connections from 127.0.0.1:4221.");
     let mut handles = JoinSet::new();
     loop {
         let stream = listener.accept().await;
+        let file_directory = file_directory.clone();
         match stream {
             Ok((stream, socket_addr)) => {
                 println!("Incomming connection from {}", socket_addr.to_string());
                 handles.spawn(async move {
-                    handle_client(stream).await.unwrap();
+                    handle_client(stream, &file_directory).await.unwrap();
                 });
             }
             Err(e) => {
