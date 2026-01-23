@@ -43,7 +43,7 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
             content = echo_text.to_string();
             for header in headers {
                 let (k, v) = header.split_once(':').unwrap_or(("", ""));
-                if k.trim().to_lowercase() == "accept-encoding" && v.trim() == "gzip" {
+                if k.trim().to_lowercase() == "accept-encoding" && v.split(',').any(|scheme| scheme.trim() == "gzip") {
                     content_headers.push_str("Content-Encoding: gzip\r\n");
                     break;
                 }
