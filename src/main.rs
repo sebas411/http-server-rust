@@ -33,6 +33,7 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
                 let (k, v) = header.split_once(':').unwrap_or(("", ""));
                 if k.trim().to_lowercase() == "user-agent" {
                     content = v.trim().to_string();
+                    break;
                 }
             }
         },
@@ -40,6 +41,13 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
             status_code = 200;
             let echo_text = &s[6..];
             content = echo_text.to_string();
+            for header in headers {
+                let (k, v) = header.split_once(':').unwrap_or(("", ""));
+                if k.trim().to_lowercase() == "accept-encoding" && v.trim() == "gzip" {
+                    content_headers.push_str("Content-Encoding: gzip\r\n");
+                    break;
+                }
+            }
         },
         s if s.len() > 6 && &s[..7] == "/files/" => {
             let filename = &s[7..];
@@ -74,7 +82,7 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
         _ => status_text = "".to_string(),
     }
     if !content.is_empty() {
-        content_headers = format!("Content-Type: {}\r\nContent-Length: {}\r\n", content_type, content.len());
+        content_headers.push_str(&format!("Content-Type: {}\r\nContent-Length: {}\r\n", content_type, content.len()));
     }
 
     // Build and send response for client
