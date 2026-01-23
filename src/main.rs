@@ -1,20 +1,28 @@
-use std::{env, fs::File, io::Read};
+use std::{env, fs::File, io::{Read, Write}};
 
 use anyhow::Result;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, task::JoinSet};
 
 async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()> {
     let mut buffer = [0; 1024];
-    stream.read(&mut buffer).await?;
-    let buffer_string = String::from_utf8(buffer.to_vec())?;
-    let mut split_buffer = buffer_string.split("\r\n");
-    let req = split_buffer.next().unwrap();
-    let headers = split_buffer.take_while(|s| !(*s).is_empty()).collect::<Vec<_>>();
-    let path = req.split(' ').nth(1).unwrap_or("");
+    let n_read = stream.read(&mut buffer).await?;
+    let buffer_string = String::from_utf8(buffer[..n_read].to_vec())?;
+    let (head, body) = buffer_string.split_once("\r\n\r\n").unwrap();
+    let mut head_split = head.split("\r\n");
+
+    let req = head_split.next().unwrap();
+    let headers = head_split.take_while(|s| !(*s).is_empty()).collect::<Vec<_>>();
+
+    let mut req_split = req.split(' ');
+    let method = req_split.next().unwrap_or("");
+    let path = req_split.next().unwrap_or("");
+
     let mut content = String::new();
     let mut content_headers = String::new();
     let mut content_type = "text/plain".to_string();
     let status_code;
+
+    // Endpoints
     match path {
         "/" => {
             status_code = 200;
@@ -35,14 +43,21 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
         },
         s if s.len() > 6 && &s[..7] == "/files/" => {
             let filename = &s[7..];
-            match File::open(format!("{}/{}", &file_directory, &filename)) {
-                Ok(mut file) => {
-                    status_code = 200;
-                    file.read_to_string(&mut content)?;
-                    content_type = "application/octet-stream".to_string();
-                },
-                Err(_) => {
-                    status_code = 404;
+            if method == "GET" {
+                match File::open(format!("{}/{}", &file_directory, &filename)) {
+                    Ok(mut file) => {
+                        status_code = 200;
+                        file.read_to_string(&mut content)?;
+                        content_type = "application/octet-stream".to_string();
+                    },
+                    Err(_) => {
+                        status_code = 404;
+                    }
+                }
+            } else {
+                status_code = 201;
+                if let Ok(mut file) = File::create(format!("{}/{}", &file_directory, &filename)) {
+                    file.write_all(body.as_bytes())?;
                 }
             }
         },
@@ -50,15 +65,19 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
             status_code = 404;
         },
     }
+
     let status_text;
-    if status_code == 404 {
-        status_text = "Not Found".to_string();
-    } else {
-        status_text = "OK".to_string();
+    match status_code {
+        404 => status_text = "Not Found".to_string(),
+        201 => status_text = "Created".to_string(),
+        200 => status_text = "OK".to_string(),
+        _ => status_text = "".to_string(),
     }
     if !content.is_empty() {
         content_headers = format!("Content-Type: {}\r\nContent-Length: {}\r\n", content_type, content.len());
     }
+
+    // Build and send response for client
     let mut response = String::new();
     response.push_str(&format!("HTTP/1.1 {} {}\r\n{}\r\n{}", status_code, status_text, content_headers, content));
     response.push_str("\r\n");
