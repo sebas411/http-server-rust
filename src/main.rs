@@ -1,6 +1,7 @@
 use std::{env, fs::File, io::{Read, Write}};
 
 use anyhow::Result;
+use flate2::{Compression, write::GzEncoder};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, task::JoinSet};
 
 async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()> {
@@ -17,7 +18,7 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
     let method = req_split.next().unwrap_or("");
     let path = req_split.next().unwrap_or("");
 
-    let mut content = String::new();
+    let mut content = vec![];
     let mut content_headers = String::new();
     let mut content_type = "text/plain".to_string();
     let status_code;
@@ -32,7 +33,7 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
             for header in headers {
                 let (k, v) = header.split_once(':').unwrap_or(("", ""));
                 if k.trim().to_lowercase() == "user-agent" {
-                    content = v.trim().to_string();
+                    content = v.trim().as_bytes().to_vec();
                     break;
                 }
             }
@@ -40,13 +41,21 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
         s if s.len() > 6 && &s[..6] == "/echo/" => {
             status_code = 200;
             let echo_text = &s[6..];
-            content = echo_text.to_string();
+            let mut encoded = false;
             for header in headers {
                 let (k, v) = header.split_once(':').unwrap_or(("", ""));
                 if k.trim().to_lowercase() == "accept-encoding" && v.split(',').any(|scheme| scheme.trim() == "gzip") {
                     content_headers.push_str("Content-Encoding: gzip\r\n");
+                    encoded = true;
                     break;
                 }
+            }
+            if encoded {
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(echo_text.as_bytes()).unwrap();
+                content = encoder.finish().unwrap();
+            } else {
+                content = echo_text.as_bytes().to_vec();
             }
         },
         s if s.len() > 6 && &s[..7] == "/files/" => {
@@ -55,7 +64,7 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
                 match File::open(format!("{}/{}", &file_directory, &filename)) {
                     Ok(mut file) => {
                         status_code = 200;
-                        file.read_to_string(&mut content)?;
+                        file.read_to_end(&mut content)?;
                         content_type = "application/octet-stream".to_string();
                     },
                     Err(_) => {
@@ -86,10 +95,11 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
     }
 
     // Build and send response for client
-    let mut response = String::new();
-    response.push_str(&format!("HTTP/1.1 {} {}\r\n{}\r\n{}", status_code, status_text, content_headers, content));
-    response.push_str("\r\n");
-    stream.write_all(response.as_bytes()).await.expect("Unable to write response to stream.");
+    let mut response = vec![];
+    response.extend(format!("HTTP/1.1 {} {}\r\n{}\r\n", status_code, status_text, content_headers).as_bytes());
+    response.extend(content);
+    response.extend(b"\r\n");
+    stream.write_all(&response).await.expect("Unable to write response to stream.");
     Ok(())
 }
 
