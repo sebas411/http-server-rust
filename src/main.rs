@@ -7,7 +7,8 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, ta
 async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()> {
     let mut buffer = [0; 1024];
     let mut current_string = String::new();
-    loop {
+    let mut close_connection = false;
+    while !close_connection {
 
         let n_read = stream.read(&mut buffer).await?;
         let buffer_string = format!("{}{}", current_string, String::from_utf8(buffer[..n_read].to_vec())?);
@@ -41,6 +42,14 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
         let mut content_headers = String::new();
         let mut content_type = "text/plain".to_string();
         let status_code;
+
+        // Check close connection header
+        for header in &headers {
+            let (k, v) = header.split_once(':').unwrap_or(("", ""));
+            if k.trim().to_lowercase() == "connection" && v.trim().to_lowercase() == "close" {
+                close_connection = true;
+            }
+        }
     
         // Endpoints
         match path {
@@ -111,6 +120,9 @@ async fn handle_client(mut stream: TcpStream, file_directory: &str) -> Result<()
         }
         if !content.is_empty() {
             content_headers.push_str(&format!("Content-Type: {}\r\nContent-Length: {}\r\n", content_type, content.len()));
+        }
+        if close_connection {
+            content_headers.push_str("Connection: close\r\n");
         }
     
         // Build and send response for client
